@@ -1,0 +1,201 @@
+---
+- name: Setup GCP spot instance and run k6 browser tests
+  hosts: localhost
+  gather_facts: true
+  
+  # Pre-tasks to load environment variables from .env file
+  pre_tasks:
+    - name: Load environment variables from .env file
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/.env"
+        name: env_vars
+    
+    - name: Set environment variables from loaded vars
+      ansible.builtin.set_fact:
+        gcp_project: "{{ env_vars.GCP_PROJECT }}"
+        gcp_region: "{{ env_vars.GCP_REGION }}"
+        gcp_zone: "{{ env_vars.GCP_ZONE }}"
+        instance_name: "{{ env_vars.INSTANCE_NAME }}"
+        machine_type: "{{ env_vars.MACHINE_TYPE }}"
+        image_family: "{{ env_vars.IMAGE_FAMILY }}"
+        image_project: "{{ env_vars.IMAGE_PROJECT }}"
+        network: "{{ env_vars.NETWORK }}"
+        disk_size_gb: "{{ env_vars.DISK_SIZE_GB | int }}"
+        target_url: "{{ env_vars.TARGET_URL }}"
+        local_results_dir: "{{ playbook_dir }}/results"
+        k6_script_path: "{{ playbook_dir }}/{{ env_vars.K6_SCRIPT_PATH }}"
+        result_file: "k6-results-{{ ansible_date_time.iso8601_basic_short }}.json"
+        ssh_public_key_path: "{{ env_vars.SSH_PUBLIC_KEY_PATH | default('~/.ssh/id_rsa.pub') }}"
+        ssh_private_key_path: "{{ env_vars.SSH_PRIVATE_KEY_PATH | default('~/.ssh/id_rsa') }}"
+
+  # debug print all env vars  
+  tasks:
+    - name: Print environment variables
+      debug:
+        msg: "{{ item.key }}: {{ item.value }}"
+      loop: "{{ env_vars | dict2items }}"
+      
+    - name: Create local results directory
+      file:
+        path: "{{ local_results_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create GCP spot instance
+      google.cloud.gcp_compute_instance:
+        name: "{{ instance_name }}"
+        machine_type: "{{ machine_type }}"
+        scheduling:
+          preemptible: true
+          automatic_restart: false
+          on_host_maintenance: TERMINATE
+        disks:
+          - auto_delete: true
+            boot: true
+            initialize_params:
+              source_image: "projects/{{ image_project }}/global/images/family/{{ image_family }}"
+              disk_size_gb: "{{ disk_size_gb }}"
+        network_interfaces:
+          - network:
+              selfLink: "https://www.googleapis.com/compute/v1/projects/{{ gcp_project }}/global/networks/{{ network }}"
+            access_configs:
+              - name: External NAT
+                type: ONE_TO_ONE_NAT
+        metadata:
+          ssh-keys: "ubuntu:{{ lookup('file', ssh_public_key_path) }}"
+        tags:
+          items:
+            - k6-browser
+            - http-server
+        zone: "{{ gcp_zone }}"
+        project: "{{ gcp_project }}"
+        auth_kind: application
+        state: present
+      register: gcp_instance
+
+    - name: Add instance to inventory
+      add_host:
+        name: "{{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+        groups: k6_runners
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ ssh_private_key_path }}"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+        port: 22
+        delay: 10
+        timeout: 300
+
+- name: Setup k6 and run tests
+  hosts: k6_runners
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required dependencies
+      apt:
+        name:
+          - ca-certificates
+          - dirmngr
+          - gpg
+          - curl
+          - gnupg
+          - apt-transport-https
+          - unzip
+        state: present
+
+    - name: Install k6 GPG key
+      shell: curl -s https://dl.k6.io/key.gpg | gpg --dearmor | tee /usr/share/keyrings/k6-archive-keyring.gpg > /dev/null
+
+    - name: Add k6 repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io stable main"
+        state: present
+
+    - name: Install k6
+      apt:
+        name: k6
+        state: present
+
+    - name: Install browser dependencies
+      apt:
+        name:
+          - libatk1.0-0
+          - libatk-bridge2.0-0
+          - libcups2
+          - libdbus-1-3
+          - libdrm2
+          - libgbm1
+          - libnss3
+          - libpango-1.0-0
+          - libxcomposite1
+          - libxdamage1
+          - libxfixes3
+          - libxkbcommon0
+          - libxrandr2
+          - xvfb
+        state: present
+
+    - name: Create test directory
+      file:
+        path: /home/ubuntu/k6_test
+        state: directory
+        mode: '0755'
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Copy k6 script to instance
+      copy:
+        src: "{{ hostvars['localhost']['k6_script_path'] }}"
+        dest: /home/ubuntu/k6_test/script.js
+        mode: '0644'
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Create results directory on instance
+      file:
+        path: /home/ubuntu/k6_test/results
+        state: directory
+        mode: '0755'
+        owner: ubuntu
+        group: ubuntu
+
+    - name: Run k6 test with browser module
+      become: false
+      shell: |
+        cd /home/ubuntu/k6_test && \
+        K6_BROWSER_ENABLED=true xvfb-run --server-args="-screen 0 1280x720x24" \
+        k6 run script.js --out json=/home/ubuntu/k6_test/results/{{ hostvars['localhost']['result_file'] }} -e {{ hostvars['localhost']['target_url'] }}
+      register: k6_result
+
+    - name: Show k6 test result summary
+      debug:
+        var: k6_result.stdout_lines
+
+    - name: Fetch test results
+      fetch:
+        src: "/home/ubuntu/k6_test/results/{{ hostvars['localhost']['result_file'] }}"
+        dest: "{{ hostvars['localhost']['local_results_dir'] }}/"
+        flat: yes
+
+- name: Terminate GCP instance
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Delete GCP spot instance
+      google.cloud.gcp_compute_instance:
+        name: "{{ instance_name }}"
+        zone: "{{ gcp_zone }}"
+        project: "{{ gcp_project }}"
+        auth_kind: application
+        state: absent
+        status: TERMINATED
+      register: delete_result
+
+    - name: Show deletion result
+      debug:
+        var: delete_result
