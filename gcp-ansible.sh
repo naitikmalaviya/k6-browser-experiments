@@ -21,4 +21,4 @@ fi
 ansible-galaxy collection install google.cloud
 
 # Run the Ansible playbook
-ansible-playbook -i inventory.ini setup-k6-gcp-spot.yml
+ansible-playbook k6-cloud-testing-pipeline.yml

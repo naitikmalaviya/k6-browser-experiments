@@ -1,80 +1,143 @@
-# K6 Browser Experiments
+# K6 Browser Load Testing on GCP Spot Instances
 
-A collection of scripts for testing web pages with k6 and its browser module.
+This project helps you run web page load tests using k6 and its browser module on cheap Google Cloud Platform (GCP) spot instances. You can watch real-time test metrics on your local computer while the tests run in the cloud.
 
-> **Note:** This project is still a work in progress. The k6 remote execution functionality using GCP spot instances has not been fully tested yet.
+![Live Metrics Demo](assets/live-metrics-sample.gif)
 
-## Setup
+## What This Project Does
 
-1. Copy the environment example file to create your own environment file:
+- Creates a temporary spot instance (VM) on Google Cloud
+- Sets up k6 with browser testing capabilities on that VM
+- Runs your load test against any website
+- Shows you live metrics on your local computer
+- Downloads HTML report files to your local machine for later analysis
+- Automatically cleans up when finished (optional)
+
+## Project Structure
+
+All k6 load testing scripts are organized in the `tests` directory:
+```
+k6-browser-experiments/
+├── tests/                  # Directory containing all k6 test scripts
+│   ├── page-load-test.js   # Default page load test script
+│   └── ...                 # Other test scripts you may add
+├── results/                # Test results are saved here
+├── k6-cloud-testing-pipeline.yml   # Ansible playbook for GCP setup
+└── ...
+```
+
+## Setup Instructions
+
+1. Make sure you have Ansible installed on your local machine:
+   ```bash
+   # For macOS
+   brew install ansible
+   
+   # For Ubuntu/Debian
+   sudo apt-get install ansible
    ```
+
+2. Copy the example environment file to create your settings:
+   ```bash
    cp .env.example .env
    ```
 
-2. Edit the `.env` file to configure:
-   - GCP project settings
-   - Instance configuration
-   - SSH keys
-   - Target URL and test parameters
+3. Edit the `.env` file with your details:
    ```yaml
+   # GCP Configuration
    GCP_PROJECT: your-project-id
-   TARGET_URL: https://yourwebsite.com
-   # ... other configuration options
+   GCP_REGION: us-central1
+   GCP_ZONE: us-central1-a
+
+   # Instance Configuration
+   INSTANCE_NAME: k6-browser-test
+   MACHINE_TYPE: n1-standard-4
+   IMAGE_FAMILY: debian-12
+   IMAGE_PROJECT: debian-cloud
+   NETWORK: default
+   DISK_SIZE_GB: 10
+
+   # SSH Configuration
+   SSH_PUBLIC_KEY_PATH: ~/.ssh/id_rsa.pub
+   SSH_PRIVATE_KEY_PATH: ~/.ssh/id_rsa
+
+   # K6 Configuration
+   K6_SCRIPT_PATH: tests/page-load-test.js  # Updated path to the tests directory
+
+   # Application Configuration
+   TARGET_URL: https://example.com
    ```
 
-## Running Tests
-
-### Local Execution
-
-Run the page load test locally:
-
-```bash
-npm run test
-```
-
-Or provide the URL directly:
-
-```bash
-k6 run -e TARGET_URL=https://example.com page-load-test.js
-```
-
-### Remote Execution (WIP)
-
-To run tests on a GCP spot instance:
-
-1. Make sure you have authenticated with GCP:
+4. Login to your Google Cloud account (if not already logged in):
    ```bash
    gcloud auth login
    ```
 
-2. Run the test deployment:
-   ```bash
-   ./gcp-ansible.sh
-   ```
+## Running Tests
 
-## Project Structure
+### Running on GCP Spot Instance
 
-- **Test Scripts**
-  - `page-load-test.js`: Main test script for page load testing
-  
-- **Infrastructure**
-  - `setup-k6-gcp-spot.yml`: Ansible playbook for GCP spot instance setup
-  - `inventory.ini`: Ansible inventory file
-  - `gcp-ansible.sh`: Helper script for running Ansible deployment
-  
-- **Configuration**
-  - `.env`: Local environment variables (not checked into git)
-  - `.env.example`: Template for environment configuration
-  
-- **Output**
-  - `screenshots/`: Directory where screenshots are saved during tests
-  - `results/`: Directory for test result files
+To run the test on a GCP spot instance with all default settings:
 
-## Ansible Playbook Details
+```bash
+./gcp-ansible.sh
+```
 
-The `setup-k6-gcp-spot.yml` playbook:
-1. Creates a preemptible GCP instance
-2. Sets up k6 and required dependencies
-3. Runs the test script
-4. Collects results
-5. Terminates the instance
+Alternatively, you can run the Ansible playbook directly:
+
+```bash
+# Install required Ansible collections first
+ansible-galaxy collection install google.cloud
+
+# Run the playbook
+ansible-playbook k6-cloud-testing-pipeline.yml
+```
+
+This will:
+1. Create a spot instance on GCP
+2. Set up k6 with browser testing
+3. Run the test against your TARGET_URL
+4. Show real-time metrics in your browser
+5. Download HTML report files to your local machine
+6. Destroy the instance when done
+
+### Keep the VM Running
+
+If you want to keep the VM after the test finishes (to run more tests later):
+
+```bash
+ansible-playbook k6-cloud-testing-pipeline.yml --skip-tags destroy
+```
+
+### Running Locally Without GCP
+
+You can also run the test script directly on your local machine without using GCP:
+
+```bash
+# Install k6 locally first
+# macOS: brew install k6
+# Other systems: https://grafana.com/docs/k6/latest/set-up/install-k6/
+
+# Run the test
+k6 run -e TARGET_URL=https://example.com tests/page-load-test.js
+```
+
+## How Live Metrics Work
+
+The live metrics feature works because Ansible creates a port forwarding connection from the remote GCP machine to your local computer. This means the test runs in the cloud, but you can see the results as if they were running locally.
+
+## Important Notes
+
+- Spot instances are cheaper but can be terminated by Google if demand is high
+- Make sure your GCP project has the necessary API permissions enabled
+- The SSH key used must not have a passphrase for automated deployment
+- All test scripts should be placed in the `tests` directory
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. Check your `.env` file configuration
+2. Ensure you're logged in to GCP with `gcloud auth login`
+3. Verify that your SSH keys are correctly specified
+4. Check GCP console for any quota or permission errors

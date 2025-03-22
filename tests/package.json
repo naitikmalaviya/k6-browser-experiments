@@ -1,0 +1,15 @@
+{
+  "name": "k6-browser-experiments",
+  "version": "1.0.0",
+  "description": "This project contains scripts for load testing web pages using k6 and the k6-browser extension.",
+  "main": "page-load-test.js",
+  "scripts": {
+    "test": "k6 run page-load-test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "k6": "^0.0.0"
+  }
+}
